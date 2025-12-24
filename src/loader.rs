@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
-use goblin::elf::{section_header, sym::Sym, Elf};
+use goblin::elf::{Elf, section_header, sym::Sym};
 use rustix::{cstr, system::init_module};
-use scroll::{ctx::SizeWith, Pwrite};
+use scroll::{Pwrite, ctx::SizeWith};
 use std::collections::HashMap;
 use std::fs;
 
@@ -38,7 +38,8 @@ fn parse_kallsyms() -> Result<HashMap<String, u64>> {
         .map(|(symbol, addr)| {
             (
                 symbol
-                    .find("$").or_else(|| symbol.find(".llvm."))
+                    .find("$")
+                    .or_else(|| symbol.find(".llvm."))
                     .map_or(symbol, |pos| &symbol[0..pos])
                     .to_owned(),
                 addr,
@@ -50,12 +51,15 @@ fn parse_kallsyms() -> Result<HashMap<String, u64>> {
 }
 
 pub fn load_module(path: &str) -> Result<()> {
-    let mut buffer =
-        fs::read(path).with_context(|| format!("Cannot read file {}", path))?;
+    // check if self is init process(pid == 1)
+    if !rustix::process::getpid().is_init() {
+        anyhow::bail!("{}", "Invalid process");
+    }
+
+    let mut buffer = fs::read(path).with_context(|| format!("Cannot read file {}", path))?;
     let elf = Elf::parse(&buffer)?;
 
-    let kernel_symbols =
-        parse_kallsyms().context("Cannot parse kallsyms")?;
+    let kernel_symbols = parse_kallsyms().context("Cannot parse kallsyms")?;
 
     let mut modifications = Vec::new();
     for (index, mut sym) in elf.syms.iter().enumerate() {
@@ -73,7 +77,7 @@ pub fn load_module(path: &str) -> Result<()> {
 
         let offset = elf.syms.offset() + index * Sym::size_with(elf.syms.ctx());
         let Some(real_addr) = kernel_symbols.get(name) else {
-            eprintln!("Warning: Cannot find symbol: {}", &name);
+            log::warn!("Cannot find symbol: {}", &name);
             continue;
         };
         sym.st_shndx = section_header::SHN_ABS as usize;
